@@ -396,6 +396,7 @@ type flushSyncWriter interface {
 }
 
 func init() {
+	flag.StringVar(&logging.logDir, "log_dir", "", "If non-empty, write log files in this directory")
 	flag.BoolVar(&logging.toStderr, "logtostderr", false, "log to standard error instead of files")
 	flag.BoolVar(&logging.alsoToStderr, "alsologtostderr", false, "log to standard error as well as files")
 	flag.Var(&logging.verbosity, "v", "log level for V logs")
@@ -453,6 +454,8 @@ type loggingT struct {
 	// safely using atomic.LoadInt32.
 	vmodule   moduleSpec // The state of the -vmodule flag.
 	verbosity Level      // V logging level, the value of the -v flag/
+
+	logDir string
 }
 
 // buffer holds a byte Buffer for reuse. The zero value is ready for use.
@@ -462,7 +465,31 @@ type buffer struct {
 	next *buffer
 }
 
+func SetLogDir(logDir string){
+	logging.setLogDir(logDir)
+}
+
+func SetLogLevel(logLevel string) bool{
+	s, err:=severityByName(logLevel)
+	if !err {
+		return false
+	}
+
+	logLevel=s.String()
+	logging.setLogLevel(logLevel)
+	return true
+}
+
 var logging loggingT
+
+func (l *loggingT) setLogDir(logDir string) {
+	l.logDir = logDir
+}
+
+func (l *loggingT) setLogLevel(logLevel string) {
+	level:=new(Level)
+	level.Set(logLevel)
+}
 
 // setVState sets a consistent state for V logging.
 // l.mu is held.
