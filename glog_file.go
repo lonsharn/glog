@@ -33,19 +33,19 @@ import (
 // MaxSize is the maximum size of a log file in bytes.
 var MaxSize uint64 = 1024 * 1024 * 1800
 
-// logDirs lists the candidate directories for new log files.
-var logDirs []string
+// logDir is the candidate directory for new log files.
+var logDir string
 
 // If non-empty, overrides the choice of directory in which to write logs.
 // See createLogDirs for the full list of possible destinations.
 //var logDir = flag.String("log_dir", "", "If non-empty, write log files in this directory")
 
 func createLogDirs() {
-	var logDir *string = &logging.logDir
-	if *logDir != "" {
-		logDirs = append(logDirs, *logDir)
+	if logging.logDir != "" {
+		logDir = logging.logDir
+	}else{
+		logDir = os.TempDir()
 	}
-	logDirs = append(logDirs, os.TempDir())
 }
 
 var (
@@ -82,14 +82,13 @@ func shortHostname(hostname string) string {
 // logName returns a new log file name containing tag, with start time t, and
 // the name for the symlink for tag.
 func logName(tag string, t time.Time) (name, link string) {
-	name = fmt.Sprintf("%s.%s.%s.%04d%02d%02d.log",
+	name = fmt.Sprintf("%s.%s.%04d%02d%02d.log",
 		program,
 		host,
-		tag,
 		t.Year(),
 		t.Month(),
 		t.Day())
-	return name, program + "." + tag
+	return name, program + ".log"
 }
 
 var onceLogDirs sync.Once
@@ -100,21 +99,19 @@ var onceLogDirs sync.Once
 // errors.
 func create(tag string, t time.Time) (f *os.File, filename string, err error) {
 	onceLogDirs.Do(createLogDirs)
-	if len(logDirs) == 0 {
+	if logDir == "" {
 		return nil, "", errors.New("log: no log dirs")
 	}
 	name, link := logName(tag, t)
 	var lastErr error
-	for _, dir := range logDirs {
-		fname := filepath.Join(dir, name)
-		f, err := os.OpenFile(fname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-		if err == nil {
-			symlink := filepath.Join(dir, link)
-			os.Remove(symlink)        // ignore err
-			os.Symlink(name, symlink) // ignore err
-			return f, fname, nil
-		}
-		lastErr = err
+	fname := filepath.Join(logDir, name)
+	f, err = os.OpenFile(fname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err == nil {
+		symlink := filepath.Join(logDir, link)
+		os.Remove(symlink)        // ignore err
+		os.Symlink(name, symlink) // ignore err
+		return f, fname, nil
 	}
+	lastErr = err
 	return nil, "", fmt.Errorf("log: cannot create log: %v", lastErr)
 }

@@ -438,7 +438,7 @@ type loggingT struct {
 	// used to synchronize logging.
 	mu sync.Mutex
 	// file holds writer for each of the log types.
-	file [numSeverity]flushSyncWriter
+	file flushSyncWriter
 	// pcs is used in V to avoid an allocation when computing the caller's PC.
 	pcs [1]uintptr
 	// vmap is a cache of the V Level for each V() call site, identified by PC.
@@ -586,11 +586,16 @@ func (l *loggingT) formatHeader(s severity, file string, line int) *buffer {
 
 	// Avoid Fprintf, for speed. The format is so simple that we can do it quickly by hand.
 	// It's worth about 3X. Fprintf is hard.
-	_, month, day := now.Date()
+	year, month, day := now.Date()
 	hour, minute, second := now.Clock()
 	// Lmmdd hh:mm:ss.uuuuuu threadid file:line]
+	head:=fmt.Sprintf("%04d/%02d/%02d %02d:%02d:%02d [%s] %d %s:%d: ",
+		year, month, day, hour, minute, second, severityName[s], pid, file, line)
+	/*
 	buf.tmp[0] = severityChar[s]
-	buf.twoDigits(1, int(month))
+	buf.nDigits(4, 0, year)
+	buf.tmp[4]='/'
+	buf.twoDigits(5, int(month))
 	buf.twoDigits(3, day)
 	buf.tmp[5] = ' '
 	buf.twoDigits(6, hour)
@@ -610,6 +615,8 @@ func (l *loggingT) formatHeader(s severity, file string, line int) *buffer {
 	buf.tmp[n+1] = ']'
 	buf.tmp[n+2] = ' '
 	buf.Write(buf.tmp[:n+3])
+	*/
+	buf.WriteString(head)
 	return buf
 }
 
@@ -712,25 +719,14 @@ func (l *loggingT) output(s severity, buf *buffer, file string, line int, alsoTo
 		if alsoToStderr || l.alsoToStderr || s >= l.stderrThreshold.get() {
 			os.Stderr.Write(data)
 		}
-		if l.file[s] == nil {
+		if l.file == nil {
 			if err := l.createFiles(s); err != nil {
 				os.Stderr.Write(data) // Make sure the message appears somewhere.
 				l.exit(err)
 			}
 		}
-		switch s {
-		case fatalLog:
-			l.file[fatalLog].Write(data)
-			fallthrough
-		case errorLog:
-			l.file[errorLog].Write(data)
-			fallthrough
-		case warningLog:
-			l.file[warningLog].Write(data)
-			fallthrough
-		case infoLog:
-			l.file[infoLog].Write(data)
-		}
+
+		l.file.Write(data)
 	}
 	if s == fatalLog {
 		// If we got here via Exit rather than Fatal, print no stacks.
@@ -749,10 +745,8 @@ func (l *loggingT) output(s severity, buf *buffer, file string, line int, alsoTo
 		// Write the stack trace for all goroutines to the files.
 		trace := stacks(true)
 		logExitFunc = func(error) {} // If we get a write error, we'll still exit below.
-		for log := fatalLog; log >= infoLog; log-- {
-			if f := l.file[log]; f != nil { // Can be nil if -logtostderr is set.
-				f.Write(trace)
-			}
+		if  l.file != nil { // Can be nil if -logtostderr is set.
+			l.file.Write(trace)
 		}
 		l.mu.Unlock()
 		timeoutFlush(10 * time.Second)
@@ -868,13 +862,6 @@ func (sb *syncBuffer) rotateFile(now time.Time) error {
 	sb.Writer = bufio.NewWriterSize(sb.file, bufferSize)
 
 	// Write header.
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "Log file created at: %s\n", now.Format("2006/01/02 15:04:05"))
-	fmt.Fprintf(&buf, "Running on machine: %s\n", host)
-	fmt.Fprintf(&buf, "Binary: Built with %s %s for %s/%s\n", runtime.Compiler, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(&buf, "Log line format: [IWEF]mmdd hh:mm:ss.uuuuuu threadid file:line] msg\n")
-	n, err := sb.file.Write(buf.Bytes())
-	sb.nbytes += uint64(n)
 	return err
 }
 
@@ -889,15 +876,15 @@ func (l *loggingT) createFiles(sev severity) error {
 	now := time.Now()
 	// Files are created in decreasing severity order, so as soon as we find one
 	// has already been created, we can stop.
-	for s := sev; s >= infoLog && l.file[s] == nil; s-- {
+	if l.file == nil {
 		sb := &syncBuffer{
 			logger: l,
-			sev:    s,
+			sev:    sev,
 		}
 		if err := sb.rotateFile(now); err != nil {
 			return err
 		}
-		l.file[s] = sb
+		l.file = sb
 	}
 	return nil
 }
@@ -922,12 +909,9 @@ func (l *loggingT) lockAndFlushAll() {
 // l.mu is held.
 func (l *loggingT) flushAll() {
 	// Flush from fatal down, in case there's trouble flushing.
-	for s := fatalLog; s >= infoLog; s-- {
-		file := l.file[s]
-		if file != nil {
-			file.Flush() // ignore error
-			file.Sync()  // ignore error
-		}
+	if l.file != nil {
+		l.file.Flush() // ignore error
+		l.file.Sync()  // ignore error
 	}
 }
 
