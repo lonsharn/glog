@@ -398,6 +398,7 @@ type flushSyncWriter interface {
 func init() {
 	flag.StringVar(&logging.logDir, "log_dir", "", "If non-empty, write log files in this directory")
 	flag.BoolVar(&logging.toStderr, "logtostderr", false, "log to standard error instead of files")
+	flag.BoolVar(&logging.dailyRolling, "daily", true, "log to standard error instead of files")
 	flag.BoolVar(&logging.alsoToStderr, "alsologtostderr", false, "log to standard error as well as files")
 	flag.Var(&logging.verbosity, "v", "log level for V logs")
 	flag.Var(&logging.stderrThreshold, "stderrthreshold", "logs at or above this threshold go to stderr")
@@ -456,6 +457,7 @@ type loggingT struct {
 	verbosity Level      // V logging level, the value of the -v flag/
 
 	logDir string
+	dailyRolling bool
 }
 
 // buffer holds a byte Buffer for reuse. The zero value is ready for use.
@@ -565,11 +567,12 @@ func (l *loggingT) header(s severity, depth int) (*buffer, string, int) {
 		file = "???"
 		line = 1
 	} else {
-		slash := strings.LastIndex(file, "/")
+		slash := strings.LastIndex(file, "src/")
 		if slash >= 0 {
-			file = file[slash+1:]
+			file = file[slash+4:]
 		}
 	}
+
 	return l.formatHeader(s, file, line), file, line
 }
 
@@ -826,6 +829,7 @@ type syncBuffer struct {
 	file   *os.File
 	sev    severity
 	nbytes uint64 // The number of bytes written to this file
+	createdDate	string
 }
 
 func (sb *syncBuffer) Sync() error {
@@ -838,6 +842,15 @@ func (sb *syncBuffer) Write(p []byte) (n int, err error) {
 			sb.logger.exit(err)
 		}
 	}
+
+	if logging.dailyRolling {
+		if sb.createdDate != string(p[1:5]) {
+			if err := sb.rotateFile(time.Now()); err != nil {
+				sb.logger.exit(err)
+			}
+		}
+	}
+
 	n, err = sb.Writer.Write(p)
 	sb.nbytes += uint64(n)
 	if err != nil {
@@ -859,6 +872,8 @@ func (sb *syncBuffer) rotateFile(now time.Time) error {
 		return err
 	}
 
+	_, month, day := now.Date()
+	sb.createdDate = fmt.Sprintf("%02d%02d", month, day)
 	sb.Writer = bufio.NewWriterSize(sb.file, bufferSize)
 
 	// Write header.
@@ -889,7 +904,7 @@ func (l *loggingT) createFiles(sev severity) error {
 	return nil
 }
 
-const flushInterval = 30 * time.Second
+const flushInterval = 5 * time.Second
 
 // flushDaemon periodically flushes the log file buffers.
 func (l *loggingT) flushDaemon() {
